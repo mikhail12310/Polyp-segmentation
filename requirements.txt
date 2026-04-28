@@ -1,0 +1,12 @@
+torch
+torchvision
+torchaudio
+segmentation-models-pytorch
+albumentations
+opencv-python
+numpy
+matplotlib
+tqdm
+scikit-learn
+pandas
+wandb
