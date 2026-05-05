@@ -17,14 +17,11 @@ RUN apt-get update && apt-get install -y \
     libgl1-mesa-glx \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements file first to leverage Docker cache
-COPY requirements.txt .
+# Clone the GitHub repository directly
+RUN git clone https://github.com/mikhail12310/Polyp-segmentation .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy the rest of the project codebase into the container
-COPY . .
 
 # The default command runs the evaluation script to reproduce the final results.
 # (If you want to train from scratch, you can override this with: docker run ... python train.py)
