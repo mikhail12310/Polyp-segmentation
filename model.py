@@ -65,7 +65,7 @@ class RetinexDisentanglementBlock(nn.Module):
         # Deepwise representation for illumination scale
         self.illumination_branch = nn.Sequential(
             nn.Conv2d(channels, channels, kernel_size=7, padding=3, groups=channels),
-            nn.Conv2d(channels, channels, kernel_size=1, padding=0),
+            nn.Conv2d(channels, channels, kernel_size=1),
             nn.BatchNorm2d(channels),
             nn.ReLU(inplace=True)
         )
@@ -152,12 +152,25 @@ class FullRFDMUNet(nn.Module):
         # Take bottleneck feature
         bottleneck = features[-1]
         
-        # Disentangle
-        f_reflect, f_illum = self.retinex(bottleneck)
+        # Estimate true brightness of input (undo ImageNet normalization)
+        mean = torch.tensor([0.485, 0.456, 0.406], device=x.device).view(1, 3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225], device=x.device).view(1, 3, 1, 1)
+        x_unnorm = x * std + mean
+        
+        # Calculate mean brightness per image in the batch
+        brightness = x_unnorm.mean(dim=[1, 2, 3], keepdim=True)
+        is_dark = (brightness < 0.4).float()
+        
+        # Disentangle for all, then blend
+        f_reflect_full, f_illum_full = self.retinex(bottleneck)
+        
+        f_reflect = is_dark * f_reflect_full + (1 - is_dark) * bottleneck
+        f_illum = is_dark * f_illum_full + (1 - is_dark) * bottleneck
         
         # Uncertainty map
         uncertainty_map = self.uncertainty_head(f_illum)
-        
+        uncertainty_map = uncertainty_map * is_dark
+            
         # Replace bottleneck with reflectance feature
         # Since features is a list/tuple, rebuild it properly
         if isinstance(features, tuple):

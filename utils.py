@@ -15,13 +15,13 @@ def set_seed(seed=42):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-def calculate_metrics(preds, targets, smooth=1e-6):
+def calculate_metrics(preds, targets, smooth=1e-6, threshold=0.5):
     """
     Calculates Dice, IoU, Precision, Recall.
     preds: post-sigmoid probabilities [N, 1, H, W]
     targets: binary masks [N, 1, H, W]
     """
-    preds = (preds > 0.5).float()
+    preds = (preds > threshold).float()
     
     preds_flat = preds.view(-1)
     targets_flat = targets.view(-1)

@@ -8,135 +8,95 @@ from config import Config
 from dataset import KvasirDataset, get_train_val_test_splits
 from augmentations import get_validation_augmentation
 from model import build_model
-from utils import set_seed, calculate_metrics, MetricTracker, save_prediction_grid, save_triple_prediction_grid, plot_robustness_curve, plot_multi_curve
+from utils import set_seed, calculate_metrics, MetricTracker, plot_multi_curve
 
-def evaluate_severity_triple(base_model, dark_model, rfdm_model, dataloader, device, severity, save_dir, num_samples_to_save=12):
-    base_model.eval()
-    dark_model.eval()
-    rfdm_model.eval()
+def evaluate_models(models, dataloader, device):
+    for m in models.values(): m.eval()
+    trackers = {k: MetricTracker() for k in models.keys()}
     
-    samples_saved = 0
-    base_tracker = MetricTracker()
-    dark_tracker = MetricTracker()
-    rfdm_tracker = MetricTracker()
-    
-    os.makedirs(save_dir, exist_ok=True)
-    
-    pbar = tqdm(dataloader, desc=f"Eval [{severity}]")
     with torch.no_grad():
-        for i, (images_clean, images_dark, masks, darkness_maps) in enumerate(pbar):
+        for _, images_dark, masks, _ in dataloader:
             images_dark = images_dark.to(device)
             masks = masks.to(device)
-            darkness_maps = darkness_maps.to(device)
             
-            device_type = 'cuda' if 'cuda' in device else 'cpu'
-            with torch.autocast(device_type=device_type, dtype=torch.float16, enabled=(device_type == 'cuda')):
-                preds_base = base_model(images_dark)
-                preds_dark = dark_model(images_dark)
-                preds_rfdm = rfdm_model(images_dark)
+            for name, model in models.items():
+                p = torch.sigmoid(model(images_dark))
+                m = calculate_metrics(p, masks, threshold=Config.THRESHOLD)
+                trackers[name].update(0, m, images_dark.size(0))
                 
-            preds_prob_base = torch.sigmoid(preds_base)
-            preds_prob_dark = torch.sigmoid(preds_dark)
-            preds_prob_rfdm = torch.sigmoid(preds_rfdm)
-            
-            metrics_base = calculate_metrics(preds_prob_base, masks)
-            metrics_dark = calculate_metrics(preds_prob_dark, masks)
-            metrics_rfdm = calculate_metrics(preds_prob_rfdm, masks)
-            
-            base_tracker.update(0, metrics_base, images_dark.size(0))
-            dark_tracker.update(0, metrics_dark, images_dark.size(0))
-            rfdm_tracker.update(0, metrics_rfdm, images_dark.size(0))
-            
-            # Save predictions across batches until limit is reached
-            if samples_saved < num_samples_to_save:
-                for j in range(min(images_dark.size(0), num_samples_to_save - samples_saved)):
-                    save_path = os.path.join(save_dir, f"sample_{samples_saved}.png")
-                    save_triple_prediction_grid(
-                        images_dark[j], masks[j], 
-                        preds_prob_base[j], preds_prob_dark[j], preds_prob_rfdm[j], 
-                        save_path
-                    )
-                    samples_saved += 1
-                    
-    return base_tracker.get_avg(), dark_tracker.get_avg(), rfdm_tracker.get_avg()
+    return {k: v.get_avg() for k, v in trackers.items()}
 
 def main():
     set_seed(Config.SEED)
     
-    model_base_path = os.path.join(Config.CHECKPOINT_DIR, "best_model.pth")
-    if not os.path.exists(model_base_path):
-        raise FileNotFoundError(f"Baseline model not found at {model_base_path}.")
-        
-    model_dark_path = os.path.join(Config.CHECKPOINT_DIR, "best_dark_model.pth")
-    if not os.path.exists(model_dark_path):
-        raise FileNotFoundError(f"Dark-trained model not found at {model_dark_path}.")
-        
-    model_rfdm_path = os.path.join(Config.CHECKPOINT_DIR, "best_illumiseg_model.pth")
-    if not os.path.exists(model_rfdm_path):
-        raise FileNotFoundError(f"RFDM model not found at {model_rfdm_path}.")
-        
-    model_base = build_model(use_illumiseg=False).to(Config.DEVICE)
-    model_base.load_state_dict(torch.load(model_base_path, map_location=Config.DEVICE))
+    print("\n--- Phase 2: Comparative Evaluation (P1, P2, P3) ---")
     
-    model_dark = build_model(use_illumiseg=False).to(Config.DEVICE)
-    model_dark.load_state_dict(torch.load(model_dark_path, map_location=Config.DEVICE))
+    models = {}
     
-    # Evaluate with the fine-tuned Full RFDM model
-    model_rfdm = build_model(use_full_rfdm=True).to(Config.DEVICE)
+    # P1: Baseline
     try:
-        model_rfdm.load_state_dict(torch.load(model_rfdm_path, map_location=Config.DEVICE))
-    except Exception:
-        # Graceful fallback mapping if needed for base model keys
-        state_dict = torch.load(model_rfdm_path, map_location=Config.DEVICE)
-        model_rfdm.load_state_dict(state_dict, strict=False)
+        models["P1 Baseline"] = build_model(use_illumiseg=False).to(Config.DEVICE)
+        models["P1 Baseline"].load_state_dict(torch.load(os.path.join(Config.CHECKPOINT_DIR, "best_model.pth"), map_location=Config.DEVICE))
+    except FileNotFoundError:
+        print("Warning: P1 Baseline checkpoint not found.")
+        
+    # P2: Dark-Trained
+    try:
+        models["P2 Dark-Trained"] = build_model(use_illumiseg=False).to(Config.DEVICE)
+        models["P2 Dark-Trained"].load_state_dict(torch.load(os.path.join(Config.CHECKPOINT_DIR, "best_dark_model.pth"), map_location=Config.DEVICE))
+    except FileNotFoundError:
+        print("Warning: P2 Dark-Trained checkpoint not found.")
     
-    print("Loaded all three models successfully.")
+    # P3 logic removed
+    
+    # P3: Final RFDM (Last Trained)
+    try:
+        models["P3 Final RFDM"] = build_model(use_full_rfdm=True).to(Config.DEVICE)
+        models["P3 Final RFDM"].load_state_dict(torch.load(os.path.join(Config.CHECKPOINT_DIR, "best_illumiseg_model.pth"), map_location=Config.DEVICE))
+    except FileNotFoundError:
+        print("Warning: P3 Final RFDM checkpoint not found.")
+    
+    if not models:
+        raise ValueError("No models found. Please train models first.")
+        
+    print(f"Loaded {len(models)} models successfully.")
     
     splits = get_train_val_test_splits(Config.IMG_DIR, Config.MASK_DIR)
-    test_img_paths, test_mask_paths = splits["test"]
     
     results = []
-    dices_base = []
-    dices_dark = []
-    dices_rfdm = []
+    plot_data = {name: [] for name in models.keys()}
     
-    print("\nStarting Comparative Robustness Evaluation Pipeline...")
     for severity in Config.SEVERITY_LEVELS:
-        test_dataset = KvasirDataset(
-            test_img_paths, test_mask_paths,
-            augmentations=get_validation_augmentation(Config.IMG_SIZE),
-            severity=severity
+        loader = DataLoader(
+            KvasirDataset(splits["test"][0], splits["test"][1], get_validation_augmentation(Config.IMG_SIZE), severity),
+            batch_size=Config.BATCH_SIZE, shuffle=False
         )
-        test_loader = DataLoader(test_dataset, batch_size=Config.BATCH_SIZE, shuffle=False, num_workers=Config.NUM_WORKERS)
+        metrics = evaluate_models(models, loader, Config.DEVICE)
         
-        save_dir = os.path.join(Config.OUTPUT_DIR, f"eval_{severity}")
-        metrics_base, metrics_dark, metrics_rfdm = evaluate_severity_triple(model_base, model_dark, model_rfdm, test_loader, Config.DEVICE, severity, save_dir)
+        row = {"Severity": severity}
+        for name, m in metrics.items():
+            row[name] = m["dice"]
+            plot_data[name].append(m["dice"])
+        results.append(row)
         
-        results.append({
-            "Severity": severity,
-            "P1 Baseline": metrics_base["dice"],
-            "P2 Dark-Trained": metrics_dark["dice"],
-            "P3 Full RFDM": metrics_rfdm["dice"]
-        })
-        dices_base.append(metrics_base["dice"])
-        dices_dark.append(metrics_dark["dice"])
-        dices_rfdm.append(metrics_rfdm["dice"])
-        
-    # Stats Dataframe
-    results_df = pd.DataFrame(results)
+    df = pd.DataFrame(results)
+    
+    # Save results
+    os.makedirs(Config.OUTPUT_DIR, exist_ok=True)
     results_csv_path = os.path.join(Config.OUTPUT_DIR, "robustness_metrics.csv")
-    results_df.to_csv(results_csv_path, index=False)
+    df.to_csv(results_csv_path, index=False)
     
-    print("\n====== STRESS TEST RESULTS ======")
-    print(results_df.to_string(index=False))
-    print("=================================\n")
+    print("\n====== FINAL COMPARISON ======")
+    print(df.to_string(index=False))
+    print("==============================\n")
     
-    # Degradation plot
     plot_multi_curve(
         Config.SEVERITY_LEVELS, 
-        {"Phase 1 Baseline": dices_base, "Phase 2 Dark-Trained": dices_dark, "Phase 3 Full RFDM": dices_rfdm},
-        "Comparative Robustness Curve", "Severity Level", "Dice Score",
-        os.path.join(Config.OUTPUT_DIR, "robustness_comparative_curve.png")
+        plot_data, 
+        "Final Robustness Comparison", 
+        "Severity", 
+        "Dice", 
+        os.path.join(Config.OUTPUT_DIR, "p1_p2_p3_comparison.png")
     )
     print("Saved comparative robustness evaluation assets to outputs/ directory.")
 

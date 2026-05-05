@@ -29,10 +29,11 @@ class Config:
     LOG_WANDB = False
     WANDB_PROJECT = "IllumiSeg"
     
-    EPOCHS = 10
+    EPOCHS = 5
     LEARNING_RATE = 3e-5
     WEIGHT_DECAY = 1e-5
     
+
     # Phase 3 Enhancements
     USE_RGSA = True
     USE_CIC = True
@@ -49,3 +50,4 @@ class Config:
     
     # Evaluation
     SEVERITY_LEVELS = ["clean", "mild", "medium", "severe"]
+    THRESHOLD = 0.45
